@@ -119,12 +119,15 @@ class KVServer:
         merge_reply = None
         merge_reply_list = []
 
+        # Reject keys that aren't in my shard
+        # Create the preference list
+        preference_list = self.GetPreferenceList(args.GetKey())
+        if self.srvid not in preference_list:
+            raise KeyError("Key '{}' not in shard!".format(args.GetKey()))
+
         # If this node got the GET req from a client, attempt a merge (otherwise just send result)
         # This prevents recursive GET calls
         if (args.GetPreMerge() and (self.cfg.nreplicas != 0)):
-            # Create the preference list
-            preference_list = self.GetPreferenceList(args.GetKey())
-
             # Grab key,value pair from all replicas
             if args.GetKey() in self.kv_store:  # Add value to merge list if it exists in kv_store
                 merge_reply_list.append(self.kv_store[args.GetKey()])

@@ -53,7 +53,7 @@ class Clerk:
                     continue
                 else:
                     if debugging:
-                        print("Succesful GET key={} on srvr={}".format(key, server_index))
+                        print("Succesful GET key={} value={} on srvr={}".format(key, reply[0], server_index))
                     req_success = 1
                     break
             else:
