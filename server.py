@@ -4,7 +4,7 @@ from typing import Tuple, Any
 from collections import deque
 import time
 
-debugging = False
+debugging = True
 
 # Use this function for debugging
 def debug(format, *args):
@@ -97,14 +97,22 @@ class KVServer:
             # id's will be removed automatically once we hit 10,000 stored
             return True
         
-    def ReconcileReplicas(self):
-        # For key == my_id
-        # Get the values from the replicas ahead of me
-        # See who has the largest timestamp
-        # Use that value as the correct value
-        # Put the value on the next nreplicas replicas
-
-        return ""
+    def GetPrimaryID(self, key):
+        try:
+            primary_server_id = int(key) % self.cfg.nservers
+        except ValueError:  # Handle non-numeric key values
+            primary_server_id = int(ord(key)) % self.cfg.nservers
+        
+        return primary_server_id
+        
+    def GetPreferenceList(self, key):
+        primary_server_id = self.GetPrimaryID(key)
+        preference_list = []
+        for node_id in range(self.cfg.nservers):
+            for shard_cnt in range(self.cfg.nreplicas-1):
+                if (node_id == ((primary_server_id + shard_cnt) % self.cfg.nservers)):
+                    preference_list.append(node_id)
+        return preference_list
 
     def Get(self, args: GetArgs):
         reply = GetReply(None)
@@ -114,17 +122,8 @@ class KVServer:
         # If this node got the GET req from a client, attempt a merge (otherwise just send result)
         # This prevents recursive GET calls
         if (args.GetPreMerge() and (self.cfg.nreplicas != 0)):
-            try:
-                primary_server_id = int(args.GetKey()) % self.cfg.nservers
-            except ValueError:  # Handle non-numeric key values
-                primary_server_id = int(ord(args.GetKey())) % self.cfg.nservers
-
             # Create the preference list
-            preference_list = []
-            for node_id in range(self.cfg.nservers):
-                for shard_cnt in range(self.cfg.nreplicas-1):
-                    if (node_id == ((primary_server_id + shard_cnt) % self.cfg.nservers)):
-                        preference_list.append(node_id)
+            preference_list = self.GetPreferenceList(args.GetKey())
 
             # Grab key,value pair from all replicas
             if args.GetKey() in self.kv_store:  # Add value to merge list if it exists in kv_store
@@ -163,41 +162,30 @@ class KVServer:
         return reply.GetValue()
 
     def Put(self, args: PutAppendArgs):
-        try:
-            primary_server_id = int(args.GetKey()) % self.cfg.nservers
-        except ValueError:  # Handle non-numeric key values
-            primary_server_id = int(ord(args.GetKey())) % self.cfg.nservers
+        reply = PutAppendReply(None)
 
-        # Create the preference list
-        preference_list = []
-        for node_id in range(self.cfg.nservers):
-            for shard_cnt in range(self.cfg.nreplicas-1):
-                if (node_id == ((primary_server_id + shard_cnt) % self.cfg.nservers)):
-                    preference_list.append(node_id)
-
-        with self.mu:   # Perform PUT only with lock acquired
-            reply = PutAppendReply(None)
-            merge_reply = None
-            merge_reply_list = []
-
+        if debugging:
+            print("Attempting PUT with key={} value={} id={} on server={}".format(args.GetKey(), args.GetValue(), args.GetID(), self.srvid))
+        
+        # Check if request is duplicate
+        if not self.IsIDNew(args.GetID()):
             if debugging:
-                print("Attempting PUT with key={} value={} id={} on server={}".format(args.GetKey(), args.GetValue(), args.GetID(), self.srvid))
-            
-            # Check if request is duplicate
-            if not self.IsIDNew(args.GetID()):
-                if debugging:
-                    print("ERROR: Duplicate PUT requested with id={}".format(args.GetID()))
-                reply.SetValue("")
-                return reply.GetValue()
+                print("ERROR: Duplicate PUT requested with id={}".format(args.GetID()))
+            reply.SetValue("")
+            return reply.GetValue()
+        
+        preference_list = self.GetPreferenceList(args.GetKey())
 
-            # Overwrite (or create) key with associated value
+        # Overwrite (or create) key with associated value
+        with self.mu:   # Perform PUT only with lock acquired
             self.kv_store[args.GetKey()] = (args.GetValue(), time.time(), args.GetID())
-            reply.SetValue(args.GetValue()) # Fill reply with value for completeness
+        
+        reply.SetValue(args.GetValue()) # Fill reply with value for completeness
         
         # If this node is the primary server for this key
         # forward request to the other nodes in the preference list
         # TODO: Might need to allow downstream nodes to replicate downstream from themselves
-        if (self.srvid == primary_server_id):
+        if (self.srvid == self.GetPrimaryID(args.GetKey())):
             for next_server_id in preference_list:
                 if (next_server_id != self.srvid):
                     for attempt in range(5):
@@ -218,23 +206,13 @@ class KVServer:
         return reply.GetValue()
 
     def Append(self, args: PutAppendArgs):
-        try:
-            primary_server_id = int(args.GetKey()) % self.cfg.nservers
-        except ValueError:  # Handle non-numeric key values
-            primary_server_id = int(ord(args.GetKey())) % self.cfg.nservers
-
-        # Create the preference list
-        preference_list = []
-        for node_id in range(self.cfg.nservers):
-            for shard_cnt in range(self.cfg.nreplicas-1):
-                if (node_id == ((primary_server_id + shard_cnt) % self.cfg.nservers)):
-                    preference_list.append(node_id)
-
         reply = PutAppendReply(None)
         internal_reply = None
 
         if debugging:
             print("Attempting APPEND with key={} value={} id={} on server={}".format(args.GetKey(), args.GetValue(), args.GetID(), self.srvid))
+
+        preference_list = self.GetPreferenceList(args.GetKey())
 
         # Check if request is duplicate
         if not self.IsIDNew(args.GetID()):
@@ -257,7 +235,7 @@ class KVServer:
         # If this node is the primary server for this key
         # forward request to the other nodes in the preference list
         # TODO: Might need to allow downstream nodes to replicate downstream from themselves
-        if (self.srvid == primary_server_id):
+        if (self.srvid == self.GetPrimaryID(args.GetKey())):
             for next_server_id in preference_list:
                 if (next_server_id != self.srvid):
                     for attempt in range(5):
