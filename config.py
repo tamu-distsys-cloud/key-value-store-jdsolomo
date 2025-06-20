@@ -70,7 +70,7 @@ class Config:
         self.nservers = nservers
         self.kvservers = [None] * nservers
         for srvid in range(nservers):
-            self.kvservers[srvid] = KVServer(self)
+            self.kvservers[srvid] = KVServer(self, srvid)
             kvsvc = Service(self.kvservers[srvid])
             srv = Server()
             srv.add_service(kvsvc)
