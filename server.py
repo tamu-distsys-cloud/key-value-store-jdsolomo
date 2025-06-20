@@ -4,7 +4,7 @@ from typing import Tuple, Any
 from collections import deque
 import time
 
-debugging = True
+debugging = False
 
 # Use this function for debugging
 def debug(format, *args):
@@ -109,7 +109,7 @@ class KVServer:
         primary_server_id = self.GetPrimaryID(key)
         preference_list = []
         for node_id in range(self.cfg.nservers):
-            for shard_cnt in range(self.cfg.nreplicas-1):
+            for shard_cnt in range(self.cfg.nreplicas):
                 if (node_id == ((primary_server_id + shard_cnt) % self.cfg.nservers)):
                     preference_list.append(node_id)
         return preference_list
@@ -225,7 +225,7 @@ class KVServer:
         # Get the most up-to-date key,value pair from all replicas
         internal_reply = self.Get(GetArgs(args.GetKey(), None, 1))
         
-        reply.SetValue(internal_reply[0])    # fill reply with old value
+        reply.SetValue(internal_reply[0].replace(args.GetValue(), ""))    # fill reply with old value
 
         with self.mu:   # Perform APPEND after only with lock acquired
             # Update the return value and the key,value storage
